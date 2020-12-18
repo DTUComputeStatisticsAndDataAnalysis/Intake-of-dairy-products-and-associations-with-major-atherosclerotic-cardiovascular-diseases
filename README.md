@@ -4,7 +4,7 @@ Code used for meta-analysis in the article: "Intake of dairy products and associ
 
 INSTRUCTIONS:
 
-- Knit the R markdown file “Final_Report.Rmd”. This file is located in the folder "Rcode". It is necessary to change the paths to your own paths.
+- Knit the R markdown file “Final_Report.Rmd”. This file is located in the folder "Code". It is necessary to change the paths to your own paths.
   “Final_Report.Rmd” calls the files "Product_analysis.Rmd" and "Product_analysis_fixed.Rmd" that makes the analysis. 
 
 - A report with all the results, named “Final_report.pdf”, is generated and put in the folder “Rcode”.
