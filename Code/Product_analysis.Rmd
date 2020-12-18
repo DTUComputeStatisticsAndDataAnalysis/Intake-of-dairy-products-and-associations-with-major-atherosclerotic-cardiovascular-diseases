@@ -1,0 +1,1051 @@
+---
+output: pdf_document
+---
+
+## `r curr.exposure`
+```{r echo=FALSE}
+
+# If men/women exist - throw away combined for metaanalysis
+data.sex.comb = data.exposure %>% group_by(id,outcome,sex,trendlevel) %>% distinct(trendlevel) %>% filter(sex %in% "Combined")
+data.sex.ncomb = data.exposure %>% group_by(id,outcome,sex,trendlevel) %>% distinct(trendlevel) %>% filter(!(sex %in% "Combined"))
+
+del.id.sex = inner_join(data.sex.ncomb,data.sex.comb,by=c("id","outcome","trendlevel")) %>% rename(sex="sex.y") 
+data.meta = anti_join(data.exposure,del.id.sex,by=c("id","outcome","trendlevel","sex"))
+
+# Range to plots
+if (curr.exposure.num<=10) {
+   xlimVector = c(0.5,2.0)
+} else {
+   xlimVector = c(0.2,5.0)
+}
+
+```
+
+**High vs. low intake meta-analysis**
+
+```{r echo=FALSE, include=FALSE}
+
+# Trends are not used in high-vs-low meta-analysis
+data.hl.v1 = data.meta[which(data.meta$trendlevel == "level"),]
+
+# If a study is not missing CI for highest exposure level it can be included
+data.deleted.hl.exp = data.deleted.hl %>% filter(exposure == curr.exposure)
+data.hl.v2 = rbind(data.hl.v1,data.deleted.hl.exp)
+
+# Only if more than two studies are available a high-low meta-analysis is made
+# If one study is available but has (F), (M) then no analysis should be done (therefore id instead of author.sex)
+count.studies = unique(data.hl.v2[,c("id","outcome")]) %>% group_by(outcome) %>% summarise(count=n()) 
+del.outcome = count.studies$outcome[count.studies$count<2]
+
+# Final level data to perform meta-analysis
+data.hl = data.hl.v2[which(!(data.hl.v2$outcome %in% del.outcome)),]
+
+# Finding different outcomes
+n.outcome.hl = data.hl %>% distinct(outcome) %>% nrow()
+outcomes.hl = unique(data.hl$outcome)
+
+n_studies = rep(0,n.outcome.hl)
+n_cases = rep(0,n.outcome.hl)
+n_participants = rep(0,n.outcome.hl)
+exposure_range = matrix(0,2,n.outcome.hl)
+RR_pooled = rep(0,n.outcome.hl)
+p_RR0 = rep(0,n.outcome.hl)
+lb = rep(0,n.outcome.hl)
+ub = rep(0,n.outcome.hl)
+I2 = rep(0,n.outcome.hl)
+p_hetero = rep(0,n.outcome.hl)
+association_direction = rep(0,n.outcome.hl)
+
+# High vs. low - make table for p-values for subgroups
+subgroups.all = c("sex","continent")
+hl.sub.p <- data.frame(matrix(ncol=length(subgroups.all),nrow=n.outcome.hl))
+names(hl.sub.p) = subgroups.all
+hl.sub.conclusion <- data.frame(matrix(ncol=length(subgroups.all),nrow=n.outcome.hl))
+names(hl.sub.conclusion) = subgroups.all
+
+# For reporting purposes
+subgroups.all.report = subgroups.all 
+
+# Allocating for publication bias for high-low meta-analysis
+hl.p.val.ET = rep(NA,n.outcome.hl)
+hl.p.val.ET.conclusion = rep(NA,n.outcome.hl)
+
+if(n.outcome.hl>0) {
+   for (out in 1:n.outcome.hl) {
+      
+      data.hl.out = data.hl[which(data.hl$outcome == outcomes.hl[out]),]
+      
+      # Number of studies (men/women studies are only counted as one)
+      n_studies[out] = data.hl.out %>% distinct(id) %>% nrow() 
+      
+      # Total number of cases 
+      n_cases[out] = unlist(data.hl.out %>%
+                               distinct(author.sex,cases_tot) %>%
+                               summarise(total_cases = sum(as.numeric(cases_tot))))
+      
+      # Total number of participants 
+      n_participants[out] = unlist(data.hl.out %>%
+                                      distinct(author.sex,n_tot) %>%
+                                      summarise(total_part = sum(n_tot)))
+      
+      
+      data.exposure.range = data.hl.out %>% filter(!is.na(explevel)) 
+      exposure_range[,out] = unlist(data.exposure.range %>%
+                                       summarise(min_dose = min(explevel),
+                                                 max_dose = max(explevel)) %>%
+                                       round())
+      
+      # For every study: find logRR and logse for the "high group"
+      high_low = data.hl.out %>%
+         group_by(author.sex) %>%
+         filter(highlowH == "H") %>%
+         ungroup()
+      
+      high_low_control = data.hl.out %>%
+         group_by(author.sex) %>%
+         filter(row_number() == n()) %>%
+         ungroup()
+      
+      # Checking that choosing the highest category is 
+      # the same as taking the records with H - print warning in the end
+      data.control.hl1 = anti_join(high_low,high_low_control,by=("author.sex"))
+      data.control.hl2 = anti_join(high_low_control,high_low,by=("author.sex"))      
+      
+      # Populating summary tables
+      summary.analysis[which(summary.analysis$outcome == outcomes.hl[out] & summary.analysis$exposure == curr.exposure),"HL"] = "x"
+      summary.analysis.studies[which(summary.analysis.studies$outcome == outcomes.hl[out] & summary.analysis.studies$exposure == curr.exposure),"HL"] = paste(high_low$author.sex,collapse=", ")
+      
+      high_low_order = high_low %>% arrange(year,author)
+      
+      meta_high_low = metagen(logRR, 
+                              logse, 
+                              studlab = author.label,
+                              method.tau = "DL", 
+                              sm = "RR",
+                              data = high_low_order)
+      
+      #Find RR, 95% CI, I2, p_hetero to the report
+      RR_pooled[out] = round(exp(meta_high_low$TE.random),2)
+      p_RR0[out]     = meta_high_low$pval.random         
+      lb[out] = round(exp(meta_high_low$lower.random),2)
+      ub[out] = round(exp(meta_high_low$upper.random),2)
+      I2[out] = round(meta_high_low$I2*100)
+      p_hetero[out] = round(meta_high_low$pval.Q,2)
+      
+      # Risk associations directions: "no",  "inverse" eller "positive"
+      association_direction[out] = ifelse(p_RR0[out] > 0.05,"no",
+                                          ifelse(p_RR0[out] <= 0.05 & RR_pooled[out] < 1,"inverse",
+                                                 ifelse(p_RR0[out] <= 0.05 & RR_pooled[out] > 1,"positive","Something is wrong")))
+      
+      # _1_ in the name is for high-vs-low
+      setEPS()
+      postscript(paste0(path.fig,"Figure",curr.exposure.num,"_1_",out,".eps"),width=8,height=8)
+      plot.new()
+      par(mar=c(4, 4, 4, 10))
+      forest(meta_high_low,
+             comb.fixed = FALSE,
+             comb.random = TRUE,
+             xlim = xlimVector,
+             layout = "JAMA",
+             leftlabs=c("Reference (Gender)","RR (95% CI)"))
+      dev.off()
+      # Sub group analysis for high vs. low intake meta-analyse (sex and continent)
+      
+      # Finding out which subgroup analysis can be made - number of subgroups should be 2
+      subgroups = character(0)
+      exclude = character(0)
+      n.sex = data.hl.out %>%
+         group_by(sex) %>% 
+         distinct(sex,author.sex) %>% 
+         summarise(count=n()) %>%
+         filter(sex != "Combined") # Combined is not a subgroup
+      
+      if (nrow(n.sex)>1) {
+         subgroups = c(subgroups,"sex")
+         exclude["sex"] = c("Combined")
+         # Populating summary tables
+         summary.analysis[which(summary.analysis$outcome == outcomes.hl[out] & summary.analysis$exposure == curr.exposure),"HLsubsex"] = "x"
+      }   
+      
+      n.continent = data.hl.out %>%
+         group_by(continent) %>% 
+         distinct(continent,author.sex) %>% 
+         summarise(count=n())
+      
+      if (nrow(n.continent)>1) {
+         subgroups = c(subgroups,"continent")
+         exclude["continent"] = c("")
+         # Populating summary tables
+         summary.analysis[which(summary.analysis$outcome == outcomes.hl[out] & summary.analysis$exposure == curr.exposure),"HLsubcontinent"] = "x"
+      }  
+      
+      
+      # Make data.frame with group variables  
+      meta_subgroups = high_low_order %>%
+         distinct(author.sex,!!!syms(subgroups)) %>%
+         select(!!!syms(subgroups))
+      
+      # One analysis for each subgroup
+      for (group_var in names(meta_subgroups)) {  
+         
+         # _1_ in the name is for high-vs-low
+         setEPS()
+         postscript(paste0(path.fig,"Figure",curr.exposure.num,"_2_",out,"_",group_var,".eps"),width = 8,height = 8)
+         plot.new()
+         par(mar=c(4, 4, 4, 10))
+         subgroup_meta = subgroup.analysis.mixed.effects(
+            x = meta_high_low,
+            subgroups = unlist(meta_subgroups[,group_var]),
+            exclude = exclude[group_var],
+            plot = TRUE,
+            xlimvec=xlimVector)
+
+         dev.off()
+         # Test of diff between subgroups
+         p_subgroup = subgroup_meta$subgroup.analysis.results$p
+         hl.sub.p[out,group_var] = round(p_subgroup,2)
+         hl.sub.conclusion[out,group_var] = 
+            ifelse(p_subgroup > 0.05,
+                   "no","")
+      }
+      
+      # Publication bias
+      # R package "meta" make the funnel start at the pooled fixed effect estimate,
+      # even though the sensible thing is to make the funnel start at the pooled random effect estimate
+      # To make this happen we need to overwrite the fixed effect estimate by the random eff est
+      meta_high_low.pb = meta_high_low
+      meta_high_low.pb[["TE.fixed"]] = meta_high_low.pb[["TE.random"]]
+      
+      # Funnel plot
+      setEPS()
+      postscript(paste0(path.fig,"Figure",curr.exposure.num,"_3_",out,".eps"),width = 8,height = 8)
+      plot.new()
+      funnel(meta_high_low.pb,
+             contour.levels =  c(.95,.975,.99),
+             col.contour=c("darkblue","blue","lightblue"))
+      legend(1.2, 0, c("p < 0.05", "p<0.025", "< 0.01"),bty = "n",
+             fill=c("darkblue","blue","lightblue"))
+
+      dev.off()
+      
+      #Egger’s test of intercept
+      #Need at least 3 studies to make test as Egger's test is based on a linear regression
+      #where 2 parameters (intercept+slope) needs to be determined - error cannot be determined with
+      #only two studies and thus we cannot test H0: intercept = 0
+      
+      # Using id - if 3 "studies" but 2 of them are Men and Women from the same study, no Egger's test will be made
+      if (length(unique(high_low$id))>2) {
+         ET = eggers.test(x = meta_high_low.pb)
+         hl.p.val.ET[out] = round(ET$p,2)
+         hl.p.val.ET.conclusion[out] = ifelse(ET$p > 0.05, "no","") 
+         
+         # Populating summary tables
+         summary.analysis[which(summary.analysis$outcome == outcomes.hl[out] & summary.analysis$exposure == curr.exposure),"HLegger"] = "x"
+      }
+      
+   }
+}
+```
+
+
+```{r echo=FALSE, results='asis'}
+if (n.outcome.hl>0) {
+   cat("In the high vs. low intake meta-analysis for ",tolower(curr.exposure))
+   if (n.outcome.hl>1) {
+      for (out in 1:(length(outcomes.hl)-1)){
+         cat(", ",n_studies[out]," studies with ",sep="")
+         if(!is.na(n_participants[out])) {
+            cat(n_participants[out], " participants and ",sep="")
+         }
+         cat(n_cases[out]," cases ",sep="")
+         if (exposure_range[1,out] != -Inf) { # Exposure range is available
+            cat("(overall intake range for studies reporting quantative exposure levels ",exposure_range[1,out],"-",exposure_range[2,out]," g/d)",sep="") 
+         }
+         cat(" were included for ",outcomes.hl[out],sep="")
+      }
+      
+      # Last outcome
+      out = length(outcomes.hl)
+      cat(" and ",n_studies[out]," studies with ",sep="")
+      if(!is.na(n_participants[out])) {
+         cat(n_participants[out], " participants and ",sep="")
+      }
+      cat(n_cases[out]," cases ",sep="")
+      if (exposure_range[1,out] != -Inf) { # Exposure range is available
+         cat("(overall intake range for studies reporting quantative exposure levels ",exposure_range[1,out],"-",exposure_range[2,out]," g/d)",sep="") 
+      }
+      cat(" were included for ",outcomes.hl[out],".",sep="")
+   }
+   if (n.outcome.hl == 1) {
+      out = length(outcomes.hl)
+      cat(" ",n_studies[out]," studies with ",sep="")
+      if(!is.na(n_participants[out])) {
+         cat(n_participants[out], " participants and ",sep="")
+      }
+      cat(n_cases[out]," cases ",sep="")
+      if (exposure_range[1,out] != -Inf) { # Exposure range is available
+         cat("(overall intake range for studies reporting quantative exposure levels ",exposure_range[1,out],"-",exposure_range[2,out]," g/d)",sep="") 
+      }
+      cat(" were included for ",outcomes.hl[out],".",sep="")
+   }
+}
+```
+
+```{r echo=FALSE, results='asis'}
+if (n.outcome.hl>0) {
+   cat("Comparing the highest category to the reference category of ",tolower(curr.exposure)," intake, ")
+   if (n.outcome.hl>1) {
+      for (out in 1:(length(outcomes.hl)-1)) {
+         cat(association_direction[out], " association between ",tolower(curr.exposure)," intake and risk of ",
+             outcomes.hl[out], " was observed (RR: ",RR_pooled[out],"; 95% CI ",lb[out]," to ",ub[out],", I^2^ = ",
+             I2[out],"%, p~heterogeneity~ ",ifelse(p_hetero[out]==0,"","=")," ",format.pval(p_hetero[out],digits=2,eps=0.001),"), ",sep="")
+         
+      }
+      
+      # Last outcome
+      out = length(outcomes.hl)
+      cat("and ", association_direction[out], " association between ",tolower(curr.exposure)," intake and risk of ",
+          outcomes.hl[out], " was observed (RR: ",RR_pooled[out],"; 95% CI ",lb[out]," to ",ub[out],", I^2^ = ",
+          I2[out],"%, p~heterogeneity~ ",ifelse(p_hetero[out]==0,"","=")," ",format.pval(p_hetero[out],digits=2,eps=0.001),
+          "). See figures ",curr.exposure.num,"_1_",1,"-",curr.exposure.num,"_1_",out,".",sep="")
+   }
+   if (n.outcome.hl == 1) {
+      # Last outcome
+      out = length(outcomes.hl)
+      cat(" ", association_direction[out], " association between ",tolower(curr.exposure)," intake and risk of ",
+          outcomes.hl[out]," was observed (RR: ",RR_pooled[out],"; 95% CI ",lb[out]," to ",ub[out],", I^2^ = ",
+          I2[out],"%, p~heterogeneity~ ",ifelse(p_hetero[out]==0,"","=")," ",format.pval(p_hetero[out],digits=2,eps=0.001),
+          "). See figure ",curr.exposure.num,"_1_",1,".",sep="")
+   }
+}
+
+# Warnings til eget check
+if (n.outcome.hl>0) {
+   if (nrow(data.control.hl1) != 0 || nrow(data.control.hl2) != 0) {
+      cat("Highest category indicated by H does not correspond to last group")
+   }
+}
+
+```
+
+
+**Dose-response meta-analysis**
+
+```{r echo=FALSE, message=FALSE, include=FALSE}
+# Linear dose response analysis 
+# exp(beta_i) is change in RR per g intake
+
+# This is scaled to change in RR per extra portion e.g. 200g
+# Thereafter random effect meta-analysis are made for the trends
+
+# Split data in trends and levels
+
+data.trend.v1 = data.meta[which(data.meta$trendlevel == "trend"),]
+data.level2trend.v1 = data.meta[which(data.meta$trendlevel == "level"),]
+
+# If no levels are present and unit for all trends are the same, 
+# we will keep trends without quantification in g/d
+# otherwise trends which are not quantified in g/d are left out
+warning.lin.data = 0
+data.trend = data.frame(author.sex = character(0),
+                        outcome = character(0),
+                        author.label = character(0),
+                        author = character(0),
+                        year = numeric(0),
+                        trendlevel = character(0),
+                        id = character(0),
+                        sex = character(0),
+                        continent = character(0),
+                        #lengthfu = character(0),
+                        logRR = numeric(0),
+                        explevel = numeric(0),
+                        ub = numeric(0),
+                        lb = numeric(0),
+                        logse = numeric(0))
+report.unit.lin = vector()
+if (nrow(data.trend.v1) != 0) {
+   for (out in unique(data.trend.v1$outcome)) {
+      data.trend.v1.out = data.trend.v1[which(data.trend.v1$outcome == out),]
+      
+      # No levels are available and the same unit for the trends
+      if (nrow(data.level2trend.v1[which(data.level2trend.v1$outcome == out),]) == 0 &
+          length(unique(data.trend.v1.out$consumption)) == 1) {
+         
+         # Substititution studies
+         if (unique(data.trend.v1.out$consumption) == "Per 1 serving/day substituted") {
+            data.trend.v1.out$explevel = 1
+            report.unit.lin[out] = "serving"
+         } else {
+            warning.lin.data = 1
+         }
+         data.trend = rbind(data.trend,data.trend.v1.out)
+      } else {
+         # If trends cannot be quantified, the study is left out
+         studies.noqexp = data.trend.v1.out[which(is.na(data.trend.v1.out$explevel)),] %>% distinct(author.sex)
+         data.trend.v2.out = anti_join(data.trend.v1.out,studies.noqexp,by=("author.sex"))
+         data.trend = rbind(data.trend,data.trend.v2.out)
+         report.unit.lin[out] = "g"
+      }
+   }
+} else {
+   # when only levels - no trends
+   report.unit.lin[out] = "g"
+}
+
+# If trend exist, we will use that one
+data.level2trend.v2 = anti_join(data.level2trend.v1,data.trend,by=c("author.sex","outcome"))
+
+# If exposure level (for levels) cannot be quantified, the study is left out
+studies.noqexp = data.level2trend.v2[which(is.na(data.level2trend.v2$explevel)),] %>%
+   distinct(author.sex,outcome)
+data.level2trend.v3 = anti_join(data.level2trend.v2,studies.noqexp,by=c("author.sex","outcome"))
+
+# If number of cases or number of participants per exposure level is missing (for levels),
+# and there is more than 1 non-referent exposure level, the study is excluded
+# If only one non-referenet exposure level there is only one error and thus
+# the covariance of the errors will only consist of 1 element namely the variance of logRR estimates
+
+# Number of exposure levels
+studies.nexplevel = count(data.level2trend.v3,outcome,author.sex)
+data.level2trend.v3.nexplevel = left_join(data.level2trend.v3,studies.nexplevel,by=c("outcome","author.sex"))
+
+# Studies without cases and participants per exposure level
+# and more than 2 exposure levels
+studies.nocapa = data.level2trend.v3.nexplevel[which((is.na(data.level2trend.v3.nexplevel$cases_exp) |
+                                              is.na(data.level2trend.v3.nexplevel$n_exp)) & 
+                                              data.level2trend.v3.nexplevel$n>2),] %>%
+   distinct(outcome,author.sex)
+data.level2trend = anti_join(data.level2trend.v3.nexplevel,studies.nocapa,by=c("outcome","author.sex"))
+# If 2 exposure levels (1 non-referent) then indep=gl
+data.level2trend$covar = ifelse(data.level2trend$n == 2,"indep","gl")
+
+# Number of outcome analysis (in linear analysis only 2 dose levels are needed (including ref) - this is always the case)
+# At least two studies per outcome are needed to make a metaanalysis
+# If a study has (F), (M) then if only that study is taken into account - do not do analysis (therefore id instead of author.sex)
+n.studies.lin = full_join(data.trend,data.level2trend) %>% group_by(outcome) %>% distinct(id) %>% summarise(count=n())
+outcomes_lin = unlist(n.studies.lin[which(n.studies.lin$count>=2),"outcome"])
+n_outcome_lin = length(outcomes_lin)
+
+RR_pooled_lin = rep(0,n_outcome_lin)
+p_RR0_lin = rep(0,n_outcome_lin)
+lb_lin = rep(0,n_outcome_lin)
+ub_lin = rep(0,n_outcome_lin)
+I2_lin = rep(0,n_outcome_lin)
+p_hetero_lin = rep(0,n_outcome_lin)
+association_direction_lin = rep(0,n_outcome_lin)
+
+# High vs. low - empty tabel to pvalues for subgroup heterogeneity
+dr.sub.p <- data.frame(matrix(ncol=length(subgroups.all),nrow=n_outcome_lin))
+names(dr.sub.p) = subgroups.all
+dr.sub.conclusion <- data.frame(matrix(ncol=length(subgroups.all),nrow=n_outcome_lin))
+names(dr.sub.conclusion) = subgroups.all
+
+# Allocating for publication bias for high-low meta-analysis
+dr.p.val.ET = rep(NA,n_outcome_lin)
+dr.p.val.ET.conclusion = rep(NA,n_outcome_lin)
+
+if (n_outcome_lin>0) {
+   for (out in 1:n_outcome_lin) {
+      
+      data.trend.out = data.trend[which(data.trend$outcome == outcomes_lin[out]),]
+      data.level2trend.out = data.level2trend[which(data.level2trend$outcome == outcomes_lin[out]),]
+      
+      data.trendfromlevelportion = data.frame(author.sex=character(0),
+                                              author.label=character(0),
+                                              author=character(0),
+                                              year=numeric(0),
+                                              logRRportion=numeric(0),
+                                              loglbportion=numeric(0),
+                                              logubportion=numeric(0),
+                                              logseportion=numeric(0),
+                                              trendlevel=character(0),
+                                              id=character(0),stringsAsFactors = FALSE)
+      for (sub in 1:length(subgroups.all)) {
+         data.trendfromlevelportion[,subgroups.all[sub]] = character(0)
+      }
+      
+      # Some only have trends
+      if (nrow(data.level2trend.out) != 0) {
+         lin_i = list()
+         author.list.lin = data.level2trend.out %>% group_by(author.sex) %>% distinct(author.sex)
+         for (i in 1:nrow(author.list.lin)) {
+            data.level2trend.out.study = data.level2trend.out[which(data.level2trend.out$author.sex == unlist(author.list.lin)[i]),]
+         covar.study = unique(data.level2trend.out.study$covar)
+         lin_i[[i]] <- dosresmeta(logRR ~ explevel, lb = lb, ub = ub, type = tolower(type),
+                                   cases = cases_exp, n = n_exp,data = data.level2trend.out.study,
+                                  covariance = covar.study)
+         
+         }
+         # Find beta_i. Note log-scale 
+         lin_bi <- map_dbl(lin_i, ~ coef(.x))
+         # Find se_i. Note log-scale
+         lin_vi <- map_dbl(lin_i, ~ vcov(.x))
+         
+         # Scale from risk change per 1 gram to risk change portion size
+         # expo = FALSE means that risk change and CI should be kept on log scale 
+         
+         pred.portion = map_dfr(lin_i,
+                                ~ predict(.x,delta = portion.size, expo = FALSE))
+         
+         
+         data.trendfromlevelportion = data.frame(pred.portion)
+         data.trendfromlevelportion$author.sex = unique(data.level2trend.out$author.sex)
+         data.trendfromlevelportion$logseportion = with(data.trendfromlevelportion,(ci.ub - ci.lb)/(2*qnorm(0.975)))
+         data.trendfromlevelportion = data.trendfromlevelportion %>% rename(logRRportion = "pred",
+                                                                            loglbportion = "ci.lb",
+                                                                            logubportion = "ci.ub")
+         
+         # Append with subgroups and trend/level
+         data.trendfromlevelportion = left_join(data.trendfromlevelportion,
+                                                data.level2trend.out %>%
+                                                   distinct(author.sex,.keep_all = TRUE) %>%
+                                                   select(author.sex,author.label,author,year,!!!syms(subgroups.all),trendlevel,id),
+                                                by="author.sex")
+      }
+      
+      # Trends to portion size
+      data.trend.out$logRRportion = with(data.trend.out,logRR/explevel*portion.size)
+      data.trend.out$logubportion = with(data.trend.out,log(ub)/explevel*portion.size)
+      data.trend.out$loglbportion = with(data.trend.out,log(lb)/explevel*portion.size)
+      data.trend.out$logseportion = with(data.trend.out,logse/explevel*portion.size)
+      
+      # reg. coefficents (bi) and variance (logse) for each study
+      keep.doseresponse = c("author.sex",
+                            "author.label",
+                            "author",
+                            "year",
+                            "logRRportion",
+                            "logseportion",
+                            "trendlevel",
+                            "id",
+                            subgroups.all)
+      data.doseresponse = full_join(data.trendfromlevelportion[,keep.doseresponse],data.trend.out[,keep.doseresponse])
+      
+      # Populating summary tables
+      summary.analysis[which(summary.analysis$outcome == outcomes_lin[out] & summary.analysis$exposure == curr.exposure),"DRlin"] = "x"
+      # Append with trend/level for reporting purposes
+      data.doseresponse$author.sex.trend = with(data.doseresponse,paste0(author.sex," ",trendlevel))
+      summary.analysis.studies[which(summary.analysis.studies$outcome == outcomes_lin[out] & summary.analysis.studies$exposure == curr.exposure),"DRlin"] = paste(data.doseresponse$author.sex.trend,collapse=", ")
+      
+      data.doseresponse.order = data.doseresponse %>% arrange(year,author)
+      
+      # Random effect meta-analyse (Note sm="RR" since all summary measures are interpreted as risk ratios.)
+      meta_extra_portion = metagen(logRRportion,
+                                   logseportion,
+                                   studlab = author.label,
+                                   method.tau = "DL",
+                                   sm = "RR",
+                                   data = data.doseresponse.order)
+      
+      
+      #Find RR, 95% CI, I2, p_hetero to report
+      RR_pooled_lin[out] = round(exp(meta_extra_portion$TE.random),2)
+      p_RR0_lin[out]     = meta_extra_portion$pval.random
+      lb_lin[out] = round(exp(meta_extra_portion$lower.random),2)
+      ub_lin[out] = round(exp(meta_extra_portion$upper.random),2)
+      I2_lin[out] = round(meta_extra_portion$I2*100)
+      p_hetero_lin[out] = round(meta_extra_portion$pval.Q,2)
+      
+      # Risk association direction: "no",  "inverse" eller "positive"
+      association_direction_lin[out] = ifelse(p_RR0_lin[out] > 0.05,"not",
+                                              ifelse(p_RR0_lin[out] <= 0.05 & RR_pooled_lin[out] < 1,"inversely",
+                                                     ifelse(p_RR0_lin[out] <= 0.05 & RR_pooled_lin[out] > 1,"positively","Something is wrong")))
+      
+      setEPS()
+      postscript(paste0(path.fig,"Figure",curr.exposure.num,"_4_",out,".eps"),width = 8,height = 8)
+      plot.new()
+      par(mar=c(4, 4, 4, 10))
+      forest(meta_extra_portion,
+             comb.fixed = FALSE,
+             comb.random = TRUE,
+             xlim = xlimVector,
+             layout = "JAMA",
+             leftlabs=c("Reference (Gender)","RR (95% CI)"))
+      dev.off()
+      
+      
+      # Subgroup analysis
+      
+      # Finding out which subgroup analysis can be made - Number of subgroups should be above 1
+      subgroups = character(0)
+      exclude = character(0)
+      n.sex = data.doseresponse %>%
+         group_by(sex) %>% 
+         distinct(sex,author.sex) %>% 
+         summarise(count=n()) %>%
+         filter(sex != "Combined") # Combined is not a subgroup
+      
+      if (nrow(n.sex)>1) {
+         subgroups = c(subgroups,"sex")
+         exclude["sex"] = c("Combined")
+         # Populating summary tables
+         summary.analysis[which(summary.analysis$outcome == outcomes_lin[out] & summary.analysis$exposure == curr.exposure),"DRlinsubsex"] = "x"
+      }   
+      
+      n.continent = data.doseresponse %>%
+         group_by(continent) %>% 
+         distinct(continent,author.sex) %>% 
+         summarise(count=n())
+      
+      if (nrow(n.continent)>1) {
+         subgroups = c(subgroups,"continent")
+         exclude["continent"] = c("")
+         # Populating summary tables
+         summary.analysis[which(summary.analysis$outcome == outcomes_lin[out] & summary.analysis$exposure == curr.exposure),"DRlinsubcontinent"] = "x"
+      }  
+      
+      # data.frame with subgroup variables
+      meta_subgroups = data.doseresponse.order %>%
+         distinct(author.sex,!!!syms(subgroups)) %>%
+         select(!!!syms(subgroups))
+      
+      # One analysis per subgroup
+      for (group_var in names(meta_subgroups)) {  
+         
+         setEPS()
+         postscript(paste0(path.fig,"Figure",curr.exposure.num,"_5_",out,"_",group_var,".eps"),width = 8,height = 8)
+         plot.new()
+         par(mar=c(4, 4, 4, 10))
+         subgroup_meta = subgroup.analysis.mixed.effects(
+            x = meta_extra_portion,
+            subgroups = unlist(meta_subgroups[,group_var]),
+            exclude = exclude[group_var],
+            plot = TRUE,
+            xlimvec=xlimVector)
+         dev.off()
+         # Test of difference between subgroups
+         p_subgroup = subgroup_meta$subgroup.analysis.results$p
+         
+         dr.sub.p[out,group_var] = round(p_subgroup,2)
+         dr.sub.conclusion[out,group_var] = 
+            ifelse(p_subgroup > 0.05,
+                   "no","")
+      }
+      
+      # Publication bias
+      # R package "meta" make the funnel start at the pooled fixed effect estimate,
+      # even though the sensible thing is to make the funnel start at the pooled random effect estimate
+      # To make this happen we need to overwrite the fixed effect estimate by the random eff est
+      meta_extra_portion.pb = meta_extra_portion
+      meta_extra_portion.pb[["TE.fixed"]] = meta_extra_portion.pb[["TE.random"]]
+      
+      # Funnel plot
+      setEPS()
+      postscript(paste0(path.fig,"Figure",curr.exposure.num,"_6_",out,".eps"),width = 8,height = 8)
+      plot.new()
+      funnel(meta_extra_portion.pb,
+             contour.levels =  c(.95,.975,.99),
+             col.contour=c("darkblue","blue","lightblue"))
+      legend(1.2, 0, c("p < 0.05", "p<0.025", "< 0.01"),bty = "n",
+             fill=c("darkblue","blue","lightblue"))
+      dev.off()
+      
+      #Egger’s test of intercept
+      #Need at least 3 studies to make test as Egger's test is based on a linear regression
+      #where 2 parameters (intercept+slope) needs to be determined - error cannot be determined with
+      #only two studies and thus we cannot test H0: intercept = 0
+      
+      # Using id - if 3 "studies" but 2 of them are Men and Women from the same study, no Egger's test will be made
+      if (length(unique(data.doseresponse$id))>2) {
+         ET = eggers.test(x = meta_extra_portion.pb)
+         dr.p.val.ET[out] = round(ET$p,2)
+         dr.p.val.ET.conclusion[out] = ifelse(ET$p > 0.05, "no","")
+         # Populating summary tables
+         summary.analysis[which(summary.analysis$outcome == outcomes_lin[out] & summary.analysis$exposure == curr.exposure),"DRlinegger"] = "x"
+      }
+      
+   }
+}
+
+# ------------ Non-linear restricted cubic spline modelling (checking conclusion) ------------
+
+# Trend cannot be used for non-linear analysis. Thus only level is available    
+data.levelnl.v1 = data.meta[which(data.meta$trendlevel == "level"),]
+
+# If exposure level (for levels) cannot be quantified, the study is left out
+studies.noqexp = data.levelnl.v1[which(is.na(data.levelnl.v1$explevel)),] %>% distinct(outcome,author.sex)
+data.levelnl.v2 = anti_join(data.levelnl.v1,studies.noqexp,by=c("outcome","author.sex"))
+
+# If number of cases or number of participants per exposure level is missing (for levels), the study is excluded
+studies.nocapa = data.levelnl.v2[which(is.na(data.levelnl.v2$cases_exp) | is.na(data.levelnl.v2$n_exp)),] %>% distinct(outcome,author.sex)
+data.levelnl.v3 = anti_join(data.levelnl.v2,studies.nocapa,by=c("outcome","author.sex"))
+
+# In non-linear analysis 3 dose levels are needed (including ref)
+studies.expl2 = count(data.levelnl.v3,outcome,author.sex) %>% filter(n<3)
+data.levelnl.v4 = anti_join(data.levelnl.v3,studies.expl2,by=c("outcome","author.sex"))
+
+# Number of outcome analysis 
+# At least two studies per outcome are needed to make a metaanalysis
+# If a study has (F), (M) then if only that study is taken into account - do not do analysis (therefore id instead of author.sex)
+n.studies.nonlin = data.levelnl.v4 %>% group_by(outcome) %>% distinct(id) %>% summarise(count=n())
+outcomes_nonlin = unlist(n.studies.nonlin[which(n.studies.nonlin$count>=2),"outcome"])
+n_outcome_nonlin = length(outcomes_nonlin)
+
+non_linear_conclusion = rep(0,n_outcome_nonlin)
+p_nonlinearity = rep(0,n_outcome_nonlin)
+
+if (n_outcome_nonlin>0) {
+   for (out in 1:n_outcome_nonlin) {
+      
+      # 3 knots gives two areas, where the two polynomials meet in the knots
+      data.nonlin = data.levelnl.v4[which(data.levelnl.v4$outcome == outcomes_nonlin[out]),]
+      
+      # Populating summary tables
+      summary.analysis[which(summary.analysis$outcome == outcomes_nonlin[out] & summary.analysis$exposure == curr.exposure),"DRnonlin"] = "x"
+      summary.analysis.studies[which(summary.analysis.studies$outcome == outcomes_nonlin[out] & summary.analysis.studies$exposure == curr.exposure),"DRnonlin"] = paste(unique(data.nonlin$author.sex),collapse=", ")
+      
+      # Spline knots is at 10%, 50% og 90% percentiles of the product intake distribution
+      knots_bin = quantile(data.nonlin$explevel, c(.1, .5, .9))
+      
+      spl_model =  data.nonlin %>%
+         dosresmeta(logRR ~ rcs(explevel, knots_bin), id = author.sex, se = logse, type = tolower(type),
+                    cases = cases_exp, n = n_exp, data = .,covariance = "gl")
+      
+      # Tests that beta2=0 as this results in a linear model
+      my_waldtest = waldtest(b = coef(spl_model),
+                             Sigma = vcov(spl_model),
+                             Terms = 2)
+      p_nonlinearity[out] = round(my_waldtest$chitest[3],2)
+      non_linear_conclusion[out] = ifelse(my_waldtest$chitest[3] > 0.05,"no","")
+      
+      xref <- 0
+      max_dose = max(data.nonlin$explevel)
+      pred_spline_model <- data.frame(explevel = c(xref, seq(0, max_dose, 1))) %>%
+         predict(spl_model, newdata = ., expo = T)
+      
+      
+      # y-axis scale logarithmic
+      if (non_linear_conclusion[out] == "") {
+         xlab.text = paste0(toTitleCase(tolower(curr.exposure))," consumption (g/d)")
+         ylab.text = paste0("Relative risk of ",outcomes_nonlin[out])
+         plot = pred_spline_model %>%
+            rename(explevel = "rcs(explevel, knots_bin)explevel") %>%
+            ggplot(aes(x = explevel, y = pred, ymin = ci.lb, ymax = ci.ub)) +
+            geom_ribbon(color="gray91",fill="gray91") +
+            geom_line() +
+            labs(x = xlab.text,
+                 y = ylab.text) +
+            geom_hline(yintercept=1, linetype="dashed", color = "black") +
+            theme_classic() +
+            scale_y_continuous(trans = "log", breaks = scales::pretty_breaks())
+         # .eps do not support transparency (plot ribbon in light color before everything else)
+         ggsave(plot,file=paste0(path.fig,"Figure",curr.exposure.num,"_7_",out,".eps"),device="eps") 
+      }
+      
+   }
+}
+
+```
+
+```{r echo=FALSE, results='asis'}
+# Non-linear conclusion
+index_nonlin = which(non_linear_conclusion == "")
+# Linear conclusion - no signif. non-linear
+index_lin1 = which(non_linear_conclusion == "no")
+# Linear conclusion - no nonlinear analysis is made
+index_lin2 = which(!(outcomes_lin %in% outcomes_nonlin))
+# Combining linear conclusion
+index_lin = c(index_lin2,which(outcomes_lin %in% outcomes_nonlin[index_lin1]))
+
+n_nonlin = length(index_nonlin)
+n_lin1 = length(index_lin1)
+n_lin2 = length(index_lin2)
+n_lin = length(index_lin)
+
+# WRITE CONCLUSION ON NONLINEAR MANUALLY!
+conclusion_nonlin = vector()
+# No conclusions needed for cheese
+if (toupper(curr.exposure)=="[INSERT EXPOSURE]") {
+   #conclusion_nonlin[1] = ""
+   #conclusion_nonlin[1] = ""
+}
+if (toupper(curr.exposure)=="[INSERT EXPOSURE]") {
+   #conclusion_nonlin[1] = ""
+   #conclusion_nonlin[1] = ""
+}
+
+
+# Some outcomes have nonlinear association
+if (n_nonlin > 0) {
+   cat("There was evidence of a non-linear dose response association for ",sep="")
+   # Non-linear association for more than one outcome
+   if (n_nonlin>1) {
+      for (nonlin in index_nonlin[1:(length(index_nonlin)-1)]) {
+         cat(outcomes_nonlin[nonlin],"(p~non-linearity~ ",
+             ifelse(p_nonlinearity[nonlin]==0,"","="),format.pval(p_nonlinearity[nonlin],digits=2,eps=0.001),", ",
+             n.studies.nonlin[nonlin]," studies), ",sep="")
+      }
+      nonlin = index_nonlin[length(index_nonlin)]
+      cat("and ",outcomes_nonlin[nonlin],"(p~non-linearity~ ",
+          ifelse(p_nonlinearity[nonlin]==0,"","="),format.pval(p_nonlinearity[nonlin],digits=2,eps=0.001),", ",
+          n.studies.nonlin[nonlin]," studies).",sep="")
+   }
+   # Non-linear association for one outcome only
+   if (n_nonlin == 1) {
+      cat(outcomes_nonlin[index_nonlin],"(p~non-linearity~ = ",
+          ifelse(p_nonlinearity[nonlin]==0,"","="),format.pval(p_nonlinearity[nonlin],digits=2,eps=0.001),", ",
+          n.studies.nonlin[nonlin]," studies).",sep="")
+   }
+   
+   # Outcomes with non-significant non-linear association are also present
+   if (n_lin1 > 0) {
+      cat("There was no evidence of a non-linear dose response association for ",sep="")
+      if (n_lin1>1) {
+         for (lin in index_lin1[1:(length(index_lin1)-1)]) {
+            cat(outcomes_nonlin[lin],", ",sep="")
+         }
+         lin = index_lin1[length(index_lin1)]
+         cat("and ",outcomes_nonlin[lin],".",sep="")
+      }
+      if (n_lin1 == 1) {
+         cat(outcomes_nonlin[index_lin1],".",sep="")
+      }
+   }
+   # Conclusion on non-linear assocation
+   for (nonlin in 1:n_nonlin) {
+      cat(conclusion_nonlin[nonlin],". ",sep="")
+   }
+}
+```
+
+
+```{r echo=FALSE, results='asis'}
+
+# Linear association
+if (n_lin > 0) {
+   # Checking that report unit is the same for all outcomes
+   if (length(unique(report.unit.lin)) == 1) {
+      cat("The linear dose response meta-analysis showed that each additional daily ",portion.size,
+          " ",unique(report.unit.lin)," of ",tolower(curr.exposure)," were ")
+   }
+   if (n_lin >1) {
+      for (lin in index_lin[1:(length(index_lin)-1)])
+         cat(association_direction_lin[lin]," associated with risk of ",outcomes_lin[lin]," (RR: ",RR_pooled_lin[lin],"; 95% CI ",
+             lb_lin[lin]," to ",ub_lin[lin],", I^2^ = ",I2_lin[lin],"%, p~heterogeneity~ ",ifelse(p_hetero_lin[lin]==0,"","=")," ",
+             format.pval(p_hetero_lin[lin],digits=2,eps=0.001),", n = ",unlist(n.studies.lin[which(n.studies.lin$outcome==outcomes_lin[lin]),"count"]),"), ",sep="")
+      lin = index_lin[length(index_lin)]
+      cat("and ",association_direction_lin[lin]," associated with risk of ",outcomes_lin[lin]," (RR: ",RR_pooled_lin[lin],"; 95% CI ",
+          lb_lin[lin]," to ",ub_lin[lin],", I^2^ = ",I2_lin[lin],"%, p~heterogeneity~ ",ifelse(p_hetero_lin[lin]==0,"","=")," ",
+          format.pval(p_hetero_lin[lin],digits=2,eps=0.001),", n = ",unlist(n.studies.lin[which(n.studies.lin$outcome==outcomes_lin[lin]),"count"]),"). ",sep="")
+      # If non-linear conclusion exists, then not all figures of linear should be reported.
+      cat("See figures ",curr.exposure.num,"_",4,"_[",paste(sort(index_lin),collapse = ","),"]. ")
+   }
+   if (n_lin == 1) {
+      lin = index_lin[length(index_lin)]
+      cat(association_direction_lin[lin]," associated with risk of ",outcomes_lin[lin]," (RR: ",RR_pooled_lin[lin],"; 95% CI ",
+          lb_lin[lin]," to ",ub_lin[lin],", I^2^ = ",I2_lin[lin],"%, p~heterogeneity~ ",ifelse(p_hetero_lin[lin]==0,"","=")," ",
+          format.pval(p_hetero_lin[lin],digits=2,eps=0.001),", n = ",unlist(n.studies.lin[which(n.studies.lin$outcome==outcomes_lin[lin]),"count"]),"). ",sep="")
+      cat("See figure ",curr.exposure.num,"_",4,"_",index_lin,". ")
+   }
+   
+}
+
+if (n_nonlin == 0 & n_outcome_nonlin != 0) {
+   cat("There was no evidence of a non-linear dose response association for ",sep="")
+   # Non-linear analysis made for more than one outcome
+   if (n_lin1>1) {
+      for (lin in index_lin1[1:(length(index_lin1)-1)]) {
+         cat(outcomes_nonlin[lin]," (p~non-linearity~ ",ifelse(p_nonlinearity[lin]==0,"","="),
+             format.pval(p_nonlinearity[lin],digits=2,eps=0.001),", n = ",
+             unlist(n.studies.nonlin[which(n.studies.nonlin$outcome==outcomes_nonlin[lin]),"count"]),"),",sep="")
+      }
+      lin = index_lin1[length(index_lin1)]
+      cat(" and ",outcomes_nonlin[lin]," (p~non-linearity~ ",ifelse(p_nonlinearity[lin]==0,"","="),
+          format.pval(p_nonlinearity[lin],digits=2,eps=0.001),", n = ",
+          unlist(n.studies.nonlin[which(n.studies.nonlin$outcome==outcomes_nonlin[lin]),"count"]),").",sep="")
+   }
+   # Non-linear analysis made for one outcome only
+   if (n_lin1 == 1) {
+      lin = index_lin1[length(index_lin1)]
+      cat(outcomes_nonlin[lin]," (p~non-linearity~ ",ifelse(p_nonlinearity[lin]==0,"","="),
+          format.pval(p_nonlinearity[lin],digits=2,eps=0.001),", n = ",
+          unlist(n.studies.nonlin[which(n.studies.nonlin$outcome==outcomes_nonlin[lin]),"count"]),").",sep="")
+   }
+}
+
+
+if (warning.lin.data == 1) {
+   cat("Trends (not quantitative) with same exposure unit is present, but the unit is not servings!")
+}
+
+```
+
+**Heterogeneity**
+
+```{r echo=FALSE, results='asis'}
+
+# Heterogeneity conclusion high-vs-low
+
+# Number of heterogeneity analysis per outcome definition
+n.heterogeneity.hl = hl.sub.p %>% replace(!is.na(.), 1) %>% replace(is.na(.), 0) %>% mutate_if(sapply(., is.character), as.numeric) %>% mutate(sum = rowSums(.[1:2]))
+out.heterogeneity.hl = which(n.heterogeneity.hl$sum > 0)
+
+for (out in out.heterogeneity.hl) {
+   cat("A stratified analysis for heterogeneity of subgroup differences, in the high-vs-low metaanalysis for the relation between ",
+       tolower(curr.exposure)," intake and ",outcomes.hl[out]," showed ",sep="")
+   # Subgroup analysis made for outcome
+   out.subgroups.hl = which(!is.na(hl.sub.p[out,]))
+   if (length(out.subgroups.hl)>1) {
+      for (sub in out.subgroups.hl[1:(length(out.subgroups.hl)-1)]) {
+         cat(hl.sub.conclusion[out,sub]," heterogeneity for ",subgroups.all.report[sub]," (p~heterogeneity~ ",
+             ifelse(hl.sub.p[out,sub]==0,"","=")," ",format.pval(hl.sub.p[out,sub],digits=2,eps=0.001),") ",sep="") 
+      }
+      sub = out.subgroups.hl[length(out.subgroups.hl)]
+      cat("and ",hl.sub.conclusion[out,sub]," heterogeneity for ",subgroups.all.report[sub]," (p~heterogeneity~ ",
+          ifelse(hl.sub.p[out,sub]==0,"","=")," ",format.pval(hl.sub.p[out,sub],digits=2,eps=0.001),"). ",sep="")
+   }
+   if (length(out.subgroups.hl)==1) {
+      sub = out.subgroups.hl
+      cat(hl.sub.conclusion[out,sub]," heterogeneity for ",subgroups.all.report[sub]," (p~heterogeneity~ ",
+          ifelse(hl.sub.p[out,sub]==0,"","=")," ",format.pval(hl.sub.p[out,sub],digits=2,eps=0.001),"). ",sep="") 
+   }
+   cat("See figures ",curr.exposure.num,"_2_",out,"[",paste(subgroups.all[out.subgroups.hl],collapse=","),"]. ",sep="")
+}
+
+```
+
+
+```{r echo=FALSE, results='asis'}
+# Heterogeneity conclusion linear
+
+# Number of heterogeneity analysis per outcome definition
+n.heterogeneity.dr = dr.sub.p %>% replace(!is.na(.), 1) %>% replace(is.na(.), 0) %>% mutate_if(sapply(., is.character), as.numeric) %>% mutate(sum = rowSums(.[1:2]))
+out.heterogeneity.dr.v1 = which(n.heterogeneity.dr$sum > 0)
+
+# If non-linear conclusion - no heterogeneity
+idx.nonlin = which(outcomes_lin %in% outcomes_nonlin[non_linear_conclusion == ""])
+if (length(idx.nonlin) != 0) {
+   out.heterogeneity.dr = out.heterogeneity.dr.v1[-idx.nonlin]
+} else {
+   out.heterogeneity.dr = out.heterogeneity.dr.v1
+}
+
+for (out in out.heterogeneity.dr) {
+   cat("A stratified analysis for heterogeneity of subgroup differences, in the dose-response metaanalysis for the relation between ",
+       tolower(curr.exposure)," intake and ",outcomes_lin[out]," showed ",sep="")
+   # Subgroup analysis made for outcome
+   out.subgroups.dr = which(!is.na(dr.sub.p[out,]))
+   if (length(out.subgroups.dr)>1) {
+      for (sub in out.subgroups.dr[1:(length(out.subgroups.dr)-1)]) {
+         cat(dr.sub.conclusion[out,sub]," heterogeneity for ",subgroups.all.report[sub]," (p~heterogeneity~ ",
+             ifelse(dr.sub.p[out,sub]==0,"","=")," ",format.pval(dr.sub.p[out,sub],digits=2,eps=0.001),") ",sep="")
+      }
+      sub = out.subgroups.dr[length(out.subgroups.dr)]
+      cat("and ",dr.sub.conclusion[out,sub]," heterogeneity for ",subgroups.all.report[sub]," (p~heterogeneity~ ",
+          ifelse(dr.sub.p[out,sub]==0,"","=")," ",format.pval(dr.sub.p[out,sub],digits=2,eps=0.001),"). ",sep="")
+   }
+   if (length(out.subgroups.dr) == 1) {
+      sub = out.subgroups.dr
+      cat(dr.sub.conclusion[out,sub]," heterogeneity for ",subgroups.all.report[sub]," (p~heterogeneity~ ",
+          ifelse(dr.sub.p[out,sub]==0,"","=")," ",format.pval(dr.sub.p[out,sub],digits=2,eps=0.001),"). ",sep="")
+   }
+   cat("See figures ",curr.exposure.num,"_5_",out,"[",paste(subgroups.all[out.subgroups.dr],collapse=","),"]. ",sep="")
+}
+```
+
+
+**Publication bias** 
+
+```{r echo=FALSE, results='asis'}
+
+# Publication bias conclusion high-vs-low
+idx.egger = which(!is.na(hl.p.val.ET.conclusion))
+idx.nonegger = which(is.na(hl.p.val.ET.conclusion))
+if (n.outcome.hl>0) {
+   if (length(idx.egger)>1) {
+      cat("There was found ")
+      for (out in idx.egger[1:(length(idx.egger)-1)]) {
+         cat(hl.p.val.ET.conclusion[out], " evidence of small study effects in the high-vs-low meta-analysis for ",
+             outcomes.hl[out]," (p~Egger~ ",ifelse(hl.p.val.ET[out]==0,"","=")," ",format.pval(hl.p.val.ET[out],digits=2,eps=0.001),"), ",sep="")
+      }
+      # Last outcome
+      out = idx.egger[length(idx.egger)]
+      cat("and ", hl.p.val.ET.conclusion[out], " evidence of small study effects in the high-vs-low meta-analysis for ",
+          outcomes.hl[out]," (p~Egger~ ",ifelse(hl.p.val.ET[out]==0,"","=")," ",format.pval(hl.p.val.ET[out],digits=2,eps=0.001),"). ",sep="")
+      cat("See figures ",curr.exposure.num,"_3_[",paste(idx.egger,collapse=","),"]. ",sep="")
+   }
+   if (length(idx.egger) == 1) {
+      cat("There was found ")
+      out = idx.egger
+      cat(hl.p.val.ET.conclusion[out], " evidence of small study effects in the high-vs-low meta-analysis for ",
+          outcomes.hl[out]," (p~Egger~ ",ifelse(hl.p.val.ET[out]==0,"","=")," ",format.pval(hl.p.val.ET[out],digits=2,eps=0.001),"). ",sep="")
+      cat("See figure ",curr.exposure.num,"_3_",idx.egger,". ",sep="")
+   }
+   if (length(idx.nonegger)>1) {
+      cat("Egger's test for publication bias for the high-vs-low metaanalysis could not be performed for ")
+      for (out in idx.nonegger[1:(length(idx.nonegger)-1)]) {
+         cat(outcomes.hl[out],", ",sep="")
+      }
+      # Last outcome
+      out = idx.nonegger[length(idx.nonegger)]
+      cat("and ", outcomes.hl[out],". ",sep="")
+      
+   }
+   if (length(idx.nonegger) == 1) {
+      cat("Egger's test for publication bias for the high-vs-low metaanalysis could not be performed for ")
+      out = idx.nonegger[length(idx.nonegger)]
+      cat(outcomes.hl[out],". ",sep="")
+      
+   }
+}
+
+```
+
+
+```{r echo=FALSE, results='asis'}
+# Publication bias conclusion dose-response
+idx.egger.v1 = which(!is.na(dr.p.val.ET.conclusion))
+idx.nonegger.v1 = which(is.na(dr.p.val.ET.conclusion))
+
+# If non-linear conclusion - no Egger
+idx.nonlin = which(outcomes_lin %in% outcomes_nonlin[non_linear_conclusion == ""])
+idx.egger = idx.egger.v1[!idx.egger.v1 %in% idx.nonlin]
+idx.nonegger = idx.nonegger.v1[!idx.nonegger.v1 %in% idx.nonlin]
+
+if (length(c(idx.egger,idx.nonegger))>0) {
+   # New line for dose-reponse
+   cat("\n",sep ="")
+   if (length(idx.egger)>1) {
+      cat("There was found ")
+      for (out in idx.egger[1:(length(idx.egger)-1)]) {
+         cat(dr.p.val.ET.conclusion[out], " evidence of small study effects in the dose-response meta-analysis for ",
+             outcomes_lin[out]," (p~Egger~ ",ifelse(dr.p.val.ET[out]==0,"","=")," ",
+             format.pval(dr.p.val.ET[out],digits=2,eps=0.001),"), ",sep="")
+      }
+      # Last outcome
+      out = idx.egger[length(idx.egger)]
+      cat("and ", dr.p.val.ET.conclusion[out], " evidence of small study effects in the dose-response meta-analysis for ",
+          outcomes_lin[out]," (p~Egger~ ",ifelse(dr.p.val.ET[out]==0,"","=")," ",
+          format.pval(dr.p.val.ET[out],digits=2,eps=0.001),"). ",sep="")
+      cat("See figures ",curr.exposure.num,"_6_[",paste(idx.egger,collapse=","),"]. ",sep="")
+   }
+   if (length(idx.egger) == 1) {
+      cat("There was found ")
+      out = idx.egger
+      cat(dr.p.val.ET.conclusion[out], " evidence of small study effects in the dose-response meta-analysis for ",
+          outcomes_lin[out]," (p~Egger~ ",ifelse(dr.p.val.ET[out]==0,"","=")," ",
+          format.pval(dr.p.val.ET[out],digits=2,eps=0.001),"). ",sep="")
+      cat("See figure ",curr.exposure.num,"_6_",idx.egger,". ",sep="")
+   }
+   if (length(idx.nonegger)>1) {
+      cat("Egger's test for publication bias for the dose-response metaanalysis could not be performed for ")
+      for (out in idx.nonegger[1:(length(idx.nonegger)-1)]) {
+         cat(outcomes_lin[out],", ",sep="")
+      }
+      # Last outcome
+      out = idx.nonegger[length(idx.nonegger)]
+      cat("and ", outcomes_lin[out],". ",sep="")
+      
+   }
+   if (length(idx.nonegger) == 1) {
+      cat("Egger's test for publication bias for the dose-response metaanalysis could not be performed for ")
+      out = idx.nonegger[length(idx.nonegger)]
+      cat(outcomes_lin[out],". ",sep="")
+      
+   }
+}
+
+
+```
+
+

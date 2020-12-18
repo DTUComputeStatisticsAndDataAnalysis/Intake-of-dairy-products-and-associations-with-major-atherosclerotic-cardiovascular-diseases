@@ -1,0 +1,481 @@
+---
+title: "Intake of dairy products and associations with major atherosclerotic cardiovascular diseases in the general adult population: a systematic review and meta-analysis of cohort studies"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: 
+    fig_caption: yes
+    fig_width: 5 
+    fig_height: 5
+    fig_crop: false 
+    
+    includes:
+    keep_tex: yes
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+---
+
+
+```{r warning=FALSE, echo=FALSE, message=FALSE}
+rm(list=ls())
+Sys.setenv(LANG = "en")
+
+library(dosresmeta) 
+library(tidyverse)
+library(readxl)
+library(xtable)
+library(rms) # used for restricted cubic spline modelling
+library(knitr) # used for knitting each product
+library(meta) # traditional meta analysis
+#See: https://bookdown.org/MathiasHarrer/Doing_Meta_Analysis_in_R/binary.html
+library(scales) # finer axis (non-linear dose-response)
+library(tools) # toTitleCase
+library(devtools)
+library(extrafont) # Arial font
+#font_import()
+source("dmetar.R") # from dmetar
+#subgroup.analysis.mixed.effects funktionen anvendes 
+# See: https://bookdown.org/MathiasHarrer/Doing_Meta_Analysis_in_R/mixed.html
+source("egger.R") # from dmetar
+
+```
+
+
+```{r import, warning=FALSE, cache=TRUE, echo = FALSE}
+# Import data
+my_path = "/Users/mgegr/Documents/Food_Meta_analysis_article/Data/"
+path.fig = "/Users/mgegr/Documents/Food_Meta_analysis_article/Figures_main/"
+path.tab = "/Users/mgegr/Documents/Food_Meta_analysis_article/Tables_main/"
+my_file = "Data_Dairy_CVD_Meta_analysis_v1.0.xlsx"
+data.raw  = read_excel(paste0(my_path,my_file),sheet='Data Meta-analysis')
+conversion = read_excel(paste0(my_path,my_file),sheet='Conversion factor',range='A3:B17') # Be aware that the range fits
+data.portion.size1 = read_excel(paste0(my_path,my_file),sheet='Portion size (g per d), dosis-r',range='A1:B11') # Be aware that the range fits
+data.portion.size2 = read_excel(paste0(my_path,my_file),sheet='Portion size (serv per d), dosi',range='A1:B20') # Be aware that the range fits
+```
+
+```{r echo=FALSE}
+# Cleaning data
+keep = c("ID number",
+        "First author’s last name",
+        "Publication year (study)",
+        "Continent (meta-analysis)",
+        #"Length of follow-up (>=10 y) (Yes/No) (meta-analysis)",
+        "Outcome (meta-analysis)",
+        "Exposure (meta-analysis)",
+        "Risk of bias (Yes/No) (meta-analysis)",
+        #"Sensitivity times (Yes/No) (meta-analysis)",
+        "Sex (meta-analysis)",
+        "Total number of events (study)",
+        "Sample size (n) Men and women combined (study)",
+        "Sample size (n) Men (study)",
+        "Sample size (n) Women (study)",
+        "Exposure trend or level (meta-analysis)",
+        "Highest exposure level",
+        "Consumption frequency or amount (median or mean intake if available) (study)",
+        "Point_estimate (meta-analysis)",
+        "Lower (meta-analysis)",
+        "Upper (meta-analysis)",
+        "Exposure_unit (meta-analysis)",
+        "Frequency (meta-analysis)",
+        "Exposure level (g/day) (meta-analysis)",
+        "Incidence type (meta-analysis)",
+        "Number of events per exposure level (study)",
+        "Number of participants or person-years per exposure level (study)",
+        "Estimate (95% CI) Most adjusted (study)")
+data.v1 = data.raw[keep]
+data.v2 = rename(data.v1,
+                 id           = "ID number",
+                 author1      = "First author’s last name",
+                 year1        = "Publication year (study)",
+                 continent    = "Continent (meta-analysis)",
+                 #lengthfu     = "Length of follow-up (>=10 y) (Yes/No) (meta-analysis)",
+                 outcome.raw  = "Outcome (meta-analysis)",
+                 exposure     = "Exposure (meta-analysis)",
+                 #senstimes    = "Sensitivity times (Yes/No) (meta-analysis)",
+                 riskbias     = "Risk of bias (Yes/No) (meta-analysis)",
+                 sex          = "Sex (meta-analysis)",
+                 cases_tot    = "Total number of events (study)",
+                 n_comb_tot   = "Sample size (n) Men and women combined (study)",
+                 n_men_tot    = "Sample size (n) Men (study)",
+                 n_women_tot  = "Sample size (n) Women (study)",
+                 trendlevel   = "Exposure trend or level (meta-analysis)",
+                 highlowH     = "Highest exposure level",
+                 consumption  = "Consumption frequency or amount (median or mean intake if available) (study)",
+                 explevelp    = "Point_estimate (meta-analysis)",
+                 explevell    = "Lower (meta-analysis)",
+                 explevelu    = "Upper (meta-analysis)",
+                 explevelunit = "Exposure_unit (meta-analysis)",
+                 explevelfreq = "Frequency (meta-analysis)",
+                 explevel     = "Exposure level (g/day) (meta-analysis)",
+                 type         = "Incidence type (meta-analysis)",
+                 cases_exp    = "Number of events per exposure level (study)",
+                 n_exp        = "Number of participants or person-years per exposure level (study)",
+                 most_adj_RR  = "Estimate (95% CI) Most adjusted (study)")
+
+# Appending author with year and sex
+data.v2$author = with(data.v2,paste0(author1," et al. ",year1))
+data.v2$author.label = with(data.v2,paste(author,factor(sex,levels=c("Men","Women","Combined"),labels=c("(M)","(W)","(M/W)"))))
+data.v2$author.label = gsub("\\s", " ", format(data.v2$author.label, width=max(nchar(data.v2$author.label))))
+data.v2$author.sex = with(data.v2,paste(id,author,factor(sex,levels=c("Men","Women","Combined"),labels=c("(M)","(F)",""))) )
+data.v2$year = as.numeric(data.v2$year1)
+# Combining n_comb_tot, n_men_tot and n_women_tot to 
+# make n_tot
+data.v2 = data.v2 %>% mutate(n_tot = ifelse(sex == "Combined",n_comb_tot,
+                                            ifelse(sex == "Men",n_men_tot,n_women_tot)))
+
+# Changing outcome to real text
+data.v2$outcome = with(data.v2,as.character(factor(outcome.raw,levels=c("F_CHD",
+                                                       "F_HemStroke",
+                                                       "F_IscStroke",
+                                                       "F_NF_CHD",
+                                                       "F_NF_HemStroke",
+                                                       "F_NF_IscStroke"),
+                                      labels=c("fatal CHD",
+                                               "fatal hemorrhagic stroke",
+                                               "fatal ischemic stroke",
+                                               "fatal and non-fatal CHD",
+                                               "fatal and non-fatal hemorrhagic stroke",
+                                               "fatal and non-fatal ischemic stroke"))))
+
+# All N/A values replaecd with R's NA
+data.v2[data.v2 == "N/A"] = NA
+# Number of participant should be numeric
+data.v3 = transform(data.v2,n_tot = as.numeric(n_tot),cases_tot = as.numeric(cases_tot))
+
+
+# Checking that we do not throw away data by conversion to numeric
+for (n in 1:nrow(data.v2)) {
+  if (is.na(as.numeric(data.v2$n_tot[n])) & !is.na(data.v2$n_tot[n]) ) {
+    print(paste0("Warning: check obs no. ",n))
+  }
+}
+for (n in 1:nrow(data.v2)) {
+  if (is.na(as.numeric(data.v2$cases_tot[n])) & !is.na(data.v2$cases_tot[n]) ) {
+    print(paste0("Warning: check obs no. ",n))
+  }
+}
+
+# cases and participants within each exposure level should be numeric
+# some n_exp are not entered as numeric
+data.v3$impflagn_exp[n] = ""
+for (n in 1:nrow(data.v3)) {
+  if (suppressWarnings(is.na(as.numeric(data.v3$n_exp[n]))) & !is.na(data.v3$n_exp[n])) {
+    percentage = as.numeric(gsub("%.*","",data.v3$n_exp[n]))
+    if (is.na(percentage)) {
+      print(paste0("Warning: check obs no. ",n))
+    } else {
+      data.v3$n_exp[n] = round((percentage/100)*data.v3$n_tot[n])
+      data.v3$impflagn_exp[n] = "Y"
+    }
+  }
+}
+for (n in 1:nrow(data.v3)) {
+  if (is.na(as.numeric(data.v3$cases_exp[n])) & !is.na(data.v3$cases_exp[n]) ) {
+    print(paste0("Warning: check obs no. ",n))
+  }
+}
+data.v4 = transform(data.v3,cases_exp = as.numeric(cases_exp),n_exp = as.numeric(n_exp))
+
+# Calculate exposure level, when point estimate is not given
+data.v4$explevel.temp = data.v4$explevelp # All point estimates are not converted
+for (n in 1:nrow(data.v4)) {
+    # Point estimate is not given
+    if (is.na(data.v4$explevelp[n])) {
+      # Both upper and lower boundary is given
+      if (!is.na(data.v4$explevell[n]) & !is.na(data.v4$explevelu[n])) {
+        # Mid-point
+        data.v4$explevel.temp[n] = data.v4$explevell[n]+(data.v4$explevelu[n]-data.v4$explevell[n])/2
+      }
+      # Only lower bound is given
+      if (!is.na(data.v4$explevell[n]) & is.na(data.v4$explevelu[n])) {
+        # Finding closest category (lower than the current) which is a range
+        # Checking whether unit is the same for closest category, whether the last category is in fact a range
+        # and whether the category looked upon belongs to the same study
+        count = 1
+        range = FALSE
+        while (range == FALSE & data.v4$author.sex[n] == data.v4$author.sex[n-count]) {
+          if (data.v4$explevelunit[n] == data.v4$explevelunit[n-count] &
+              data.v4$explevelfreq[n] == data.v4$explevelfreq[n-count] &
+              !is.na(data.v4$explevell[n-count]) &
+              !is.na(data.v4$explevelu[n-count])) {
+            # Width of this category is as big as adjacent category
+            data.v4$explevel.temp[n] = data.v4$explevell[n]+(data.v4$explevelu[n-count]-data.v4$explevell[n-count])/2
+            range = TRUE
+          }
+          count = count + 1
+          # Added: No more data to look through
+          if (n-count==0) {
+            break
+          }
+        }
+        # If no range category is found in the study
+        if (range == FALSE) {
+          data.v4$explevel.temp[n] = data.v4$explevell[n]
+        }
+      }
+    }
+}
+
+
+# Make conversion dataset ready for merge
+conversion.v1 = rename(conversion,
+                       explevelunit = "Exposure_unit")
+conversion.v1[nrow(conversion.v1)+1,] = c("g",1)
+
+# Merging datasets
+data.v5 = left_join(data.v4,conversion.v1,by=("explevelunit"))
+
+# Convert frequency to days
+data.v5$explevelfreqd = factor(data.v5$explevelfreq,levels=c("d","w"),labels=c(1,7))
+data.v5$explevelfreqd = as.numeric(as.character(data.v5$explevelfreqd))
+# Converting unit to g/d
+data.v5$gram = as.numeric(data.v5$gram)
+data.v5$explevel.temp = as.numeric(data.v5$explevel.temp)
+data.v5$explevel = with(data.v5,explevel.temp*gram/explevelfreqd)
+
+# Some studies do not have confidence limits for RR and thus no se can be found
+del.meta = vector()
+for (n in 1:nrow(data.v5)) {
+  if (grepl("\\(.*",data.v5$most_adj_RR[n])==0) {
+    del.meta = c(del.meta,n)
+  }
+}
+
+data.v6 = mutate(data.v5,
+                 RR = as.numeric(gsub("\\(.*","",most_adj_RR)), # Uddrag RR vha. regexp
+                 logRR = log(as.numeric(RR)),
+                 temp = gsub(".*\\(","",most_adj_RR), # Uddrag CI limits
+                 temp = gsub("\\).*","",temp),
+                 temp = gsub("Ref","",temp),
+                 ub = as.numeric(gsub(".*,","",temp)),
+                 lb = as.numeric(gsub(",.*","",temp)),
+                 logse = (log(ub) - log(lb))/(2*qnorm(0.975)), # calculate log(se)
+                 logse = ifelse(is.na(logse),0,logse), 
+                 inv_logse = 1/logse,# Udregne inverse log(SE)
+)
+
+# Some substitution studies from RU4 should be inversed to match
+data.v7 = data.v6 # To make changes in new dataset
+inv.exposure = c("Low-fat milk for cheese",
+                 "High-fat milk for cheese",
+                 "Low-fat yogurt products for cheese",
+                 "High-fat yogurt products for cheese")
+
+inv.exposure.new = c("Cheese for low-fat milk",
+                     "Cheese for high-fat milk",
+                     "Cheese for low-fat yogurt products",
+                     "Cheese for high-fat yogurt products")
+
+inv.idx = with(data.v6,which(exposure %in% inv.exposure &
+                     id == "RU4" &
+                     trendlevel == "trend"))
+
+data.v7[inv.idx,"RR"] = 1/data.v6[inv.idx,"RR"]
+# Lower and uppper bound switches
+data.v7[inv.idx,"ub"] = 1/data.v6[inv.idx,"lb"]
+data.v7[inv.idx,"lb"] = 1/data.v6[inv.idx,"ub"]
+data.v7[inv.idx,"logRR"] = -1*data.v6[inv.idx,"logRR"]
+data.v7[inv.idx,"logse"] = data.v6[inv.idx,"logse"] # NOT -1*logse as upper and lower bound switch, so logse is the same
+data.v7[inv.idx,"exposure"] = as.character(factor(data.v6[inv.idx,"exposure"],levels=c(inv.exposure),labels=c(inv.exposure.new)))
+
+# Study RO2 report on a percentage scale - divide by 100
+data.v8 = data.v7
+percentage.idx = with(data.v7,which(id == "RO2"))
+data.v8[percentage.idx,"RR"] = data.v7[percentage.idx,"RR"]/100
+data.v8[percentage.idx,"lb"] = data.v7[percentage.idx,"lb"]/100
+data.v8[percentage.idx,"ub"] = data.v7[percentage.idx,"ub"]/100
+data.v8[percentage.idx,"logRR"] = data.v7[percentage.idx,"logRR"]-log(100)
+data.v8[percentage.idx,"logse"] = (log(data.v7[percentage.idx,"ub"])-log(data.v7[percentage.idx,"lb"]))/(2*qnorm(0.975)) # redundant
+
+# Studies that are missing CI are deleted during loop over combination of (outcome,product)
+# Study 1755 Hu are missing CI for all categories, but the highest and can therefore without problems go into the High-Low analysis. 
+# However this study should not go into the linear dose-response analysis. 
+
+del.meta.data = unique(data.v8[del.meta,c("author.sex","outcome","exposure")])
+del.meta.data$delete = "x"
+data.v9 = left_join(data.v8,del.meta.data,by=c("author.sex","outcome","exposure"))
+
+data = data.v9[which(is.na(data.v9$delete)),!(names(data.v9) %in% c("delete","temp"))]
+
+# Delete outcomes not described in article
+# idx.notinarticle = which(data$outcome %in% c("fatal CHD","fatal hemorrhagic stroke","fatal ischemic stroke"))
+# data = data[-idx.notinarticle,]
+
+data.deleted = data.v9[which(!is.na(data.v9$delete)),]
+
+data.deleted.hl.all = data.deleted %>% select(-c(delete,temp)) %>% filter(logse != 0 & highlowH == "H") 
+
+```
+
+
+```{r echo=FALSE}
+# Collecting portionsize data
+colnames(data.portion.size1)[1:2] = c("Exposure","portionsize")
+colnames(data.portion.size2)[1:2] = c("Exposure","portionsize")
+data.portion = rbind(data.portion.size1[,1:2],data.portion.size2[,1:2])
+```
+
+
+```{r echo=FALSE}
+# Overview of analysis and studies used
+# Pre-allocating table
+summary.analysis.v1 = unique(data[,c("exposure","outcome")]) %>% arrange(exposure)
+summary.analysis = summary.analysis.v1 %>% add_column(HL="",
+                                                   HLsubsex = "",
+                                                   HLsubcontinent = "",
+                                                   HLsubfu = "",
+                                                   HLegger = "",
+                                                   DRlin = "",
+                                                   DRlinsubsex = "",
+                                                   DRlinsubcontinent = "",
+                                                   DRlinsubfu = "",
+                                                   DRlinegger = "",
+                                                   DRnonlin = "")
+summary.analysis.studies = summary.analysis.v1 %>% add_column(HL="",
+                                                   DRlin = "",
+                                                   DRnonlin = "")
+exposure = unique(data$exposure)
+
+```
+
+<!--Overview: Number of studies per exposure and outcome-->
+```{r echo=FALSE}
+
+data.help = unique(data[,c("id","outcome","exposure")])
+summary.eoc = data.help %>% group_by(exposure,outcome) %>% summarise(count=n())
+exposure = unique(data$exposure)
+
+summary = matrix(ncol=6,nrow=1000)
+count = 1
+for (n in 1:nrow(summary.eoc)) {
+  data.temp = data[which(data$exposure == summary.eoc$exposure[n] & data$outcome == summary.eoc$outcome[n]),]
+  sum.aut = data.temp %>% group_by(author.sex,trendlevel) %>% summarise(count=n())
+
+  for (n1 in 1:nrow(sum.aut)) {
+    if (n1 == 1) {
+      summary[count,] = c(summary.eoc$exposure[n],
+                           summary.eoc$outcome[n],
+                           summary.eoc$count[n],
+                           sum.aut$author.sex[n1],
+                           sum.aut$trendlevel[n1],
+                           sum.aut$count[n1])
+    } else {
+      summary[count,] = c("",
+                           "",
+                           "",
+                           sum.aut$author.sex[n1],
+                           sum.aut$trendlevel[n1],
+                           sum.aut$count[n1])
+    }
+    count = count+1
+  }
+
+}
+summary = summary[1:(count-1),]
+summary.df = data.frame(summary)
+
+```
+
+
+
+# Main Report
+<!-- One section per product-->
+```{r master1, comment='', echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.width= 4., fig.height= 4, fig.cap= ""}
+data.deleted.hl = data.deleted.hl.all
+out = NULL
+for (exp.iter in 1:length(exposure)) {
+  curr.exposure = exposure[exp.iter]
+  portion.size = data.portion$portionsize[which(data.portion$Exposure == curr.exposure)]
+  # If portionsize do not exists it is (should be) because no linear dose-response analysis is made.
+  # If portionsize do not exist, set it so high that if it is an error it does not exist, it would be seen
+  if (length(portion.size) == 0){
+    portion.size = 10000
+  }
+  curr.exposure.num = exp.iter
+  data.exposure = data[which(data$exposure == curr.exposure),]
+  out <- c(out, knit_child('Product_analysis.Rmd',quiet=TRUE))
+}
+cat(paste(out, collapse = '\n'))
+
+# # Saving summary table
+write.csv(summary.analysis,paste0(path.tab,"summaryanalysis.csv"))
+write.csv(summary.analysis.studies,paste0(path.tab,"summaryanalysisstudies.csv"))
+```
+
+# Sensitivity analysis (Fixed effects models)
+```{r echo=FALSE}
+
+# Change figure and table path
+path.fig = "/Users/mgegr/Documents/Food_Meta_analysis_article/Figures_fixed/"
+path.tab = "/Users/mgegr/Documents/Food_Meta_analysis_article/Tables_fixed/"
+
+```
+
+```{r fixed, comment='', echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.width= 4., fig.height= 4, fig.cap= ""}
+data.deleted.hl = data.deleted.hl.all
+out = NULL
+for (exp.iter in 1:length(exposure)) {
+  curr.exposure = exposure[exp.iter]
+  portion.size = data.portion$portionsize[which(data.portion$Exposure == curr.exposure)]
+  # If portionsize do not exists it is (should be) because no linear dose-response analysis is made.
+  # If portionsize do not exist, set it so high that if it is an error it does not exist, it would be seen
+  if (length(portion.size) == 0){
+    portion.size = 10000
+  }
+  curr.exposure.num = exp.iter
+  data.exposure = data[which(data$exposure == curr.exposure),]
+  out <- c(out, knit_child('Product_analysis_fixed.Rmd',quiet=TRUE))
+}
+cat(paste(out, collapse = '\n'))
+
+```
+
+
+# Sensitivity analysis (Risk of bias)
+```{r echo=FALSE}
+
+# Data for sensitivity analysis (Risk of bias)
+data.riskbias = data %>% filter(riskbias == "No")
+data.deleted.hl = data.deleted.hl.all %>% filter(riskbias == "No")
+# Change figure and table path
+path.fig = "/Users/mgegr/Documents/Food_Meta_analysis_article/Figures_riskbias/"
+path.tab = "/Users/mgegr/Documents/Food_Meta_analysis_article/Tables_riskbias/"
+
+# Preallocating for new overview tables
+summary.analysis.v1 = unique(data[,c("exposure","outcome")]) %>% arrange(exposure)
+summary.analysis = summary.analysis.v1 %>% add_column(HL="",
+                                                   HLsubsex = "",
+                                                   HLsubcontinent = "",
+                                                   HLegger = "",
+                                                   DRlin = "",
+                                                   DRlinsubsex = "",
+                                                   DRlinsubcontinent = "",
+                                                   DRlinegger = "",
+                                                   DRnonlin = "")
+summary.analysis.studies = summary.analysis.v1 %>% add_column(HL="",
+                                                   DRlin = "",
+                                                   DRnonlin = "")
+```
+
+```{r riskofbias, comment='', echo=FALSE, message=FALSE, warning=FALSE, results="asis", fig.width= 4., fig.height= 4, fig.cap= ""}
+out = NULL
+for (exp.iter in 1:length(exposure)) {
+  curr.exposure = exposure[exp.iter]
+  portion.size = data.portion$portionsize[which(data.portion$Exposure == curr.exposure)]
+  # If portionsize do not exists it is (should be) because no linear dose-response analysis is made.
+  # If portionsize do not exist, set it so high that if it is an error it does not exist, it would be seen
+  if (length(portion.size) == 0){
+    portion.size = 10000
+  }
+  curr.exposure.num = exp.iter
+  data.exposure = data.riskbias[which(data.riskbias$exposure == curr.exposure),]
+  out <- c(out, knit_child('Product_analysis.Rmd',quiet=TRUE))
+}
+cat(paste(out, collapse = '\n'))
+
+# # Saving summary table
+write.csv(summary.analysis,paste0(path.tab,"summaryanalysis.csv"))
+write.csv(summary.analysis.studies,paste0(path.tab,"summaryanalysisstudies.csv"))
+```
+
+
